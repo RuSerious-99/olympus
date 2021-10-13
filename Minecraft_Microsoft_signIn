@@ -1,0 +1,305 @@
+public class MainController {
+
+	private int userId = 0;
+	//private String uuid;
+	//private int x;
+	//private int y;
+
+	private String accessToken = "";
+	private String XBLAccessToken = "";
+	private String XBLUserHash = "";
+	private String XSTSAccessToken = "";
+	private String XSTSUserHash = "";
+
+	@FXML
+	private AnchorPane mainPane;
+
+	@FXML
+	void initialize() {
+
+		startAuthentication();
+	}
+
+	private void startAuthentication() {
+
+		WebView webView = new WebView();
+		webView.getEngine().setJavaScriptEnabled(true);
+		webView.getEngine().load(Const.LOGIN_URL);
+		webView.getEngine().getHistory().getEntries()
+				.addListener((ListChangeListener<WebHistory.Entry>) browserHistory -> {
+					if (browserHistory.next() && browserHistory.wasAdded()) {
+						for (WebHistory.Entry entry : browserHistory.getAddedSubList()) {
+							if (entry.getUrl().startsWith(Const.REDIRECT_URL_SUFFIX)) {
+								String authenticatePass = entry.getUrl();
+								String[] splitted = authenticatePass.split("=");
+								String authenticationCode = splitted[1];
+								try {
+									getAccessToken(authenticationCode);
+								} catch (ParseException e) {
+									e.printStackTrace();
+								} catch (IOException e) {
+									e.printStackTrace();
+								}
+							}
+						}
+					}
+				});
+		mainPane.getChildren().add(webView);
+	}
+
+	private void getAccessToken(String authenticationCode) throws ParseException, IOException {
+
+		HttpPost post = new HttpPost(Const.AUTH_TOKEN_URL);
+		post.addHeader("content-type", "application/x-www-form-urlencoded");
+
+		List<NameValuePair> urlParameters = new ArrayList<>();
+		urlParameters.add(new BasicNameValuePair("client_id", Const.CLIENT_ID));
+		urlParameters.add(new BasicNameValuePair("code", authenticationCode));
+		urlParameters.add(new BasicNameValuePair("grant_type", "authorization_code"));
+		urlParameters.add(new BasicNameValuePair("redirect_uri", Const.REDIRECT_URL_SUFFIX));
+		post.setEntity(new UrlEncodedFormEntity(urlParameters));
+
+		HttpClient httpClient = HttpClientBuilder.create().build();
+		HttpResponse response = httpClient.execute(post);
+
+		BufferedReader rd = new BufferedReader(new InputStreamReader(response.getEntity().getContent()));
+		String responseLine = "";
+		while ((responseLine = rd.readLine()) != null) {
+			JSONObject jsonObj = new JSONObject(responseLine);
+			accessToken = jsonObj.getString("access_token");
+		}
+		XBLToken(accessToken);
+	}
+
+	private void XBLToken(String accessToken) throws IOException {
+
+		accessToken = "d=" + accessToken;
+		Map<String, String> array = new LinkedHashMap<>();
+		array.put("AuthMethod", "RPS");
+		array.put("SiteName", "user.auth.xboxlive.com");
+		array.put("RpsTicket", accessToken);
+
+		Map<Object, Object> urlParameters = new LinkedHashMap<>();
+		urlParameters.put("RelyingParty", "http://auth.xboxlive.com");
+		urlParameters.put("TokenType", "JWT");
+		urlParameters.put("Properties", array);
+
+		URL url = new URL(Const.XBL_AUTH_URL);
+		HttpURLConnection con = (HttpURLConnection) url.openConnection();
+		con.setRequestMethod("POST");
+
+		con.setRequestProperty("Content-Type", "application/json");
+		con.setRequestProperty("x-xbl-contract-version", "1");
+		con.setRequestProperty("Accept", "application/json");
+		con.setDoOutput(true);
+
+		Gson gson = new GsonBuilder().disableHtmlEscaping().create();
+		String json = gson.toJson(urlParameters);
+
+		try (OutputStream os = con.getOutputStream()) {
+			byte[] input = json.getBytes("utf-8");
+			os.write(input, 0, input.length);
+		}
+
+		try (BufferedReader br = new BufferedReader(new InputStreamReader(con.getInputStream(), "utf-8"))) {
+			StringBuilder response = new StringBuilder();
+			JSONObject jsonObj = null;
+			String responseLine = null;
+			while ((responseLine = br.readLine()) != null) {
+				response.append(responseLine.trim());
+
+				jsonObj = new JSONObject(responseLine);
+				XBLAccessToken = jsonObj.getString("Token");
+
+				JSONObject displayClaims = jsonObj.getJSONObject("DisplayClaims");
+				JSONArray xui = (JSONArray) displayClaims.get("xui");
+				JSONObject XBLUserHashTemp = (JSONObject) xui.get(0);
+				XBLUserHash = XBLUserHashTemp.get("uhs").toString();
+
+			}
+
+			XSTSToken(XBLAccessToken);
+
+		}
+
+	}
+
+	private void XSTSToken(String XBLAccessToken) throws ClientProtocolException, IOException {
+
+		String[] token = { XBLAccessToken };
+
+		Map<Object, Object> array = new LinkedHashMap<>();
+		array.put("UserTokens", token);
+		array.put("SandboxId", "RETAIL");
+
+		Map<Object, Object> urlParameters = new LinkedHashMap<>();
+		urlParameters.put("RelyingParty", "rp://api.minecraftservices.com/");
+		urlParameters.put("TokenType", "JWT");
+		urlParameters.put("Properties", array);
+
+		URL url = new URL(Const.XSTSAUTHURL);
+		HttpURLConnection con = (HttpURLConnection) url.openConnection();
+		con.setRequestMethod("POST");
+
+		con.setRequestProperty("Content-Type", "application/json");
+		con.setRequestProperty("x-xbl-contract-version", "1");
+		con.setRequestProperty("Accept", "application/json");
+		con.setDoOutput(true);
+
+		Gson gson = new GsonBuilder().disableHtmlEscaping().create();
+		String json = gson.toJson(urlParameters);
+
+		try (OutputStream os = con.getOutputStream()) {
+			byte[] input = json.getBytes("utf-8");
+			os.write(input, 0, input.length);
+		}
+		try (BufferedReader br = new BufferedReader(new InputStreamReader(con.getInputStream(), "utf-8"))) {
+			StringBuilder response = new StringBuilder();
+			String responseLine = null;
+			while ((responseLine = br.readLine()) != null) {
+				response.append(responseLine.trim());
+				JSONObject jsonObj = new JSONObject(responseLine);
+				XSTSAccessToken = jsonObj.getString("Token");
+
+				JSONObject displayClaims = jsonObj.getJSONObject("DisplayClaims");
+				JSONArray xui = (JSONArray) displayClaims.get("xui");
+				JSONObject XSTSUserHashTemp = (JSONObject) xui.get(0);
+				XSTSUserHash = XSTSUserHashTemp.get("uhs").toString();
+			}
+			getMinecraftToken(XSTSUserHash, XSTSAccessToken);
+		}
+
+	}
+
+	private void getMinecraftToken(String XSTSUserHash, String XSTSAccessToken) throws IOException {
+
+		JSONObject json = new JSONObject();
+		json.put("identityToken", "XBL3.0 x=" + XSTSUserHash.trim() + ";" + XSTSAccessToken.trim());
+		json.put("ensureLegacyEnabled", true);
+
+		CloseableHttpClient httpClient = HttpClientBuilder.create().build();
+
+		try {
+			HttpPost request = new HttpPost(Const.MC_LOGIN_URL);
+			StringEntity params = new StringEntity(json.toString());
+			request.addHeader("content-type", "application/json");
+			request.setEntity(params);
+			HttpResponse response = httpClient.execute(request);
+			JSONObject result = new JSONObject(EntityUtils.toString(response.getEntity()));
+			String mcToken = result.getString("access_token");
+			checkMcStore(mcToken);
+
+		} catch (Exception ex) {
+			System.out.println(ex);
+		} finally {
+			httpClient.close();
+		}
+
+	}
+
+	private void checkMcStore(String mcAccessToken)
+			throws IOException, JSONException, ParseException, ClassNotFoundException, SQLException {
+
+		MainController obj = new MainController();
+		boolean gameInStore = obj.sendItemsGet(mcAccessToken);
+
+		if (gameInStore) {
+			checkMcProfile(mcAccessToken);
+		} else {
+			mainPane.getScene().getWindow().hide();
+		}
+	}
+
+	private boolean sendItemsGet(String mcAccessToken) throws ClientProtocolException, IOException {
+
+		CloseableHttpClient httpClient = HttpClients.createDefault();
+
+		HttpGet request = new HttpGet(Const.MC_STORE_URL);
+		request.addHeader("Authorization", "Bearer " + mcAccessToken);
+
+		try (CloseableHttpResponse response = httpClient.execute(request)) {
+			HttpEntity entity = response.getEntity();
+			Header headers = entity.getContentType();
+
+			JSONObject results = new JSONObject(EntityUtils.toString(response.getEntity()));
+			JSONArray array = results.getJSONArray("items");
+
+			if (!array.isEmpty()) {
+				httpClient.close();
+				return true;
+			}
+			httpClient.close();
+			return false;
+		}
+	}
+
+	private void checkMcProfile(String mcAccessToken)
+			throws JSONException, ParseException, IOException, ClassNotFoundException, SQLException {
+		CloseableHttpClient httpClient = HttpClients.createDefault();
+
+		HttpGet request = new HttpGet(Const.MC_PROFILE_URL);
+		request.addHeader("Authorization", "Bearer " + mcAccessToken);
+
+		try (CloseableHttpResponse response = httpClient.execute(request)) {
+
+			HttpEntity entity = response.getEntity();
+			Header headers = entity.getContentType();
+
+			JSONObject results = new JSONObject(EntityUtils.toString(response.getEntity()));
+			String displayname = (String) results.get("name");
+			String uuid = (String) results.get("id");
+			
+            Session session = new Session(displayname, uuid, mcAccessToken, "mojang");
+			Minecraft.getMinecraft().session = session;
+			mainPane.getScene().getWindow().hide();
+
+			setUserId(displayname, uuid);
+		}
+	}
+
+	public void setUserId(String displayname, String uuid) throws ClassNotFoundException, SQLException {
+		DBHandler dbHandler = new DBHandler();
+		DBUsers user = new DBUsers();
+		user.setDispalyname(displayname);
+		user.setUuid(uuid);
+
+		ResultSet userInDB = dbHandler.isUserInDb(user);
+
+		int counter = 0;
+		while (userInDB.next()) {
+			userId = userInDB.getInt("userid");
+			Olympus.getInstance().setUserId(userId);
+			Olympus.getInstance().setDisplayName(displayname);
+			Olympus.getInstance().startUp();
+			counter++;
+		} 
+		if(counter < 1) {
+			dbHandler.RegisterUser(user);
+
+			ResultSet retieveUserId = dbHandler.getUser(user);
+			int counter2 = 0;
+			while (retieveUserId.next()) {
+				userId = retieveUserId.getInt("userid");
+				Olympus.getInstance().setUserId(userId);
+				Olympus.getInstance().setDisplayName(displayname);
+                counter2++;
+			}
+		}
+	}
+
+	public int getUserId() {
+		return userId;
+	}
+
+	public void setUserId(int userId) {
+		this.userId = userId;
+	}
+
+	/*
+	 * public int getX() { return x; }
+	 * 
+	 * public int getY() { return y; }
+	 */
+	
+
+}
